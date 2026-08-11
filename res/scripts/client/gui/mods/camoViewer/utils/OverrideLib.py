@@ -1,3 +1,6 @@
+from .logger import log
+
+
 class _EventHook(object):
 
   def __init__(self):
@@ -55,6 +58,11 @@ class _OverrideLib(object):
     if hasattr(cls, evt):
       e = getattr(cls, evt)
     else:
+      if not hasattr(cls, method):
+        log('COMPATIBILITY BREAK: %s.%s not found - this hook was NOT installed. '
+            'A WoT update likely renamed/removed this. Handler %r is now inactive.' % (
+              getattr(cls, '__name__', cls), method, getattr(handler, '__name__', handler)))
+        return
       new_method = '__orig_%i_%s' % (1 if prepend else 0, method)
       setattr(cls, evt, _EventHook())
       setattr(cls, new_method, getattr(cls, method))
@@ -64,6 +72,7 @@ class _OverrideLib(object):
       l.__name__ = method
       setattr(cls, method, l)
     e += handler
+    log('hook installed: %s.%s -> %r' % (getattr(cls, '__name__', cls), method, getattr(handler, '__name__', handler)))
 
 
 g_overrideLib = _OverrideLib()

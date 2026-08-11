@@ -1591,6 +1591,53 @@ two rows (`FILTER_BAR_HEIGHT` 30→60), window height unchanged overall
 shape-wise (viewport shrinks to match). Compiled clean (6585 bytes).
 Not yet live-tested.
 
+## 7ag. Session 1 — future-update compatibility diagnostics added
+
+User asked for logging specifically aimed at diagnosing what breaks
+after a future WoT client update — a real, well-founded concern, since
+this mod depends heavily on private/internal API surface (monkey-patched
+methods, name-mangled attributes, specific private data-provider
+attributes) that WG owes no compatibility guarantee on at all.
+
+**Most important change**: hardened `OverrideLib.__registerEvent`
+itself (used by every hook this mod installs) to check `hasattr(cls,
+method)` *before* attempting to wrap it. Previously, if
+`CustomizationBottomPanel` ever lost `_populate`/`_dispose`/the
+name-mangled `__onTabChanged` in a future patch, the bare
+`getattr(cls, method)` would throw `AttributeError` **at module-import
+time** — which, given `CamoViewer.py` imports `CustomizationHook` at
+module level, would have taken down the **entire mod** (including the
+otherwise-unrelated F6/F7/F8 debug tools), not just the customization
+grid feature. Now it logs a specific, actionable line
+(`COMPATIBILITY BREAK: <Class>.<method> not found - this hook was NOT
+installed...`) and returns cleanly instead. Also added a confirmation
+line on **successful** registration (`hook installed: <Class>.<method>
+-> <handler>`) — useful as a positive baseline to compare against if
+something silently stops working later without an explicit error.
+
+**Second layer**: `CamoViewer.py` now wraps the
+`CustomizationHook`/`CamoGridWindow` imports themselves in a
+try/except (these still do fail at import time if, say, WG *moves* the
+`customization_carousel` module or renames `FilterTypes`/`isItemUsedUp`
+— reachable Python-level import errors, a different failure mode than
+the hook-registration one above, needing separate handling). On
+failure: logs a full traceback, and the mod continues running with
+F6-F8 intact but Space/F9 cleanly disabled (with their own log lines
+explaining why) rather than crashing.
+
+**Third**: `utils/compat.py`, `logClientVersion()` — reads the running
+client's actual `version.xml` via `ResMgr` (confirmed-working pattern,
+§7e) and logs it once at mod init (`running client version=... 
+client_build=... realm=...`). Gives a clear, dated baseline in the log
+of exactly which client build the mod was actually running against,
+directly comparable against whatever build a future bug report comes
+from.
+
+Compiled/verified locally, not yet live-tested — this whole feature is
+itself best validated by the *absence* of new problems in the next
+normal test, plus checking the new banner/confirmation lines appear
+as expected.
+
 ## 7. New source, user-provided: `izeberg/wot-src`
 
 User-supplied: <https://github.com/izeberg/wot-src> — a public
