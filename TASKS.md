@@ -273,6 +273,14 @@ proceed to Phase 3 for the real content.
       owned-only, name search, nation, vehicle-type compatibility —
       research into what filter metadata is actually available per
       item from the existing data provider before any UI is designed.
-- [ ] **Generalize to remaining tabs**: 3D Styles, 3D Attachments,
-      Paints, Decals, Emblems, Inscriptions, Effects — once the Camo +
-      2D Styles mechanic is proven solid in real use.
+- [x] **Generalized to all tabs** (v0.0.32, not yet live-tested):
+      `GRID_TABS` widened to `CustomizationTabs.ALL` (WG's own
+      constant — 3D/2D Styles, 3D Attachments, Paints, Camouflage,
+      Decals, Emblems, Inscriptions, Effects; deliberately excludes
+      Stat Trackers). Rest of the pipeline was already generic, no
+      other code changes needed. Season filter stays Camo-only.
+      **Flagged, not solved**: 3D Attachments has its own slot-
+      selection concept in vanilla that our simple
+      `onSelectItem(-1, intCD, -1)` call has never had to account for
+      — genuinely unknown whether it behaves correctly there, worth
+      specifically checking. `NOTES.md` §7ab.

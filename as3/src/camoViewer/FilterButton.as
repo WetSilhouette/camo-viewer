@@ -5,7 +5,7 @@ package camoViewer {
 
   public class FilterButton extends Sprite {
 
-    private static const WIDTH:Number = 76;
+    private static const DEFAULT_WIDTH:Number = 76;
     private static const HEIGHT:Number = 22;
     private static const OFF_COLOR:uint = 0x2a2f36;
     private static const ON_COLOR:uint = 0x4a6a8a;
@@ -17,14 +17,16 @@ package camoViewer {
     public var active:Boolean = false;
 
     private var label:TextField;
+    private var buttonWidth:Number;
 
-    public function FilterButton(text:String, buttonValue:int) {
+    public function FilterButton(text:String, buttonValue:int, width:Number = 0) {
       super();
       value = buttonValue;
+      buttonWidth = width > 0 ? width : DEFAULT_WIDTH;
       buttonMode = true;
 
       label = new TextField();
-      label.width = WIDTH;
+      label.width = buttonWidth;
       label.height = HEIGHT;
       label.selectable = false;
       label.mouseEnabled = false;
@@ -49,7 +51,7 @@ package camoViewer {
       graphics.clear();
       graphics.beginFill(active ? ON_COLOR : OFF_COLOR);
       graphics.lineStyle(1, BORDER_COLOR);
-      graphics.drawRect(0, 0, WIDTH, HEIGHT);
+      graphics.drawRect(0, 0, buttonWidth, HEIGHT);
       graphics.endFill();
 
       var fmt:TextFormat = new TextFormat();

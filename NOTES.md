@@ -1401,6 +1401,196 @@ it reproduces cleanly before chasing this further — not assuming a
 second bug exists without a repro, consistent with this session's
 concrete-evidence-before-fix discipline.
 
+## 7ab. Session 1 — generalized to all customization tabs (not yet live-tested)
+
+User confirmed the earlier "Unable to customize" error doesn't
+reproduce on a single deliberate click — closes out §7z/§7aa, was
+very likely a rapid-repeat-click race, not a season-data bug. Then
+asked to generalize Space-grid support to every Customization tab.
+
+**Surgical change**: the whole pipeline
+(`getCurrentItems()`/icon resolution/`onSelectItem`) was already
+written generically off `panel.carouselItems`/`panel.service`, nothing
+Camo/Style-specific baked in except the already-scoped season filter
+(`isCamouflageTab()`, untouched, still Camo-only per the user's own
+earlier request). Only change needed: `GRID_TABS` widened from the
+2-tuple to the real WG constant `CustomizationTabs.ALL` — `(STYLES_3D,
+STYLES_2D, ATTACHMENTS, PAINTS, CAMOUFLAGES, PROJECTION_DECALS,
+EMBLEMS, INSCRIPTIONS, MODIFICATIONS)`, deliberately excludes
+`STAT_TRACKERS` (not part of WG's own "ALL" grouping, and not visible
+in the tab bar in any screenshot this session) — reusing WG's own
+canonical tab-set rather than hand-enumerating matches exactly what
+the visible tab bar shows (3D Styles/2D Styles/3D Attachments/Paints/
+Camouflage/Decals/Emblems/Inscriptions/Effects).
+
+**One real known-unknown flagged, not solved preemptively**: the
+`ATTACHMENTS` (3D Attachments) tab has its own slot-selection concept
+(`self.__ctx.mode.selectedSlot`) in vanilla's own carousel logic — our
+`onSelectItem(-1, intCD, -1)` call has always ignored slot state
+entirely (works fine for every tab tested so far, which don't need
+one). Genuinely unknown whether attachment selection needs a slot
+chosen first or behaves differently without our grid doing anything
+special — not solved speculatively, flagged as the one tab worth
+specifically checking once this is live.
+
+Compiled/verified locally, not yet live-tested.
+
+## 7ac. Session 1 — "used up elsewhere" items: investigated the confirm-dialog request, found the real fix is a filter default (not yet live-tested)
+
+User's original ask ("remove style from another tank with approving
+popup") led to real research rather than building a redundant dialog:
+- Found the exact vanilla confirmation flow
+  (`customization_cart_view.py`'s `__onBuy`): `containsVehicleBound(...)`
+  triggers a real dialog (`DialogPresets.CUSTOMIZATION_INSTALL_BOUND`,
+  `R.strings.dialogs.customization.buy_install_bound`) — but only at
+  the **"Apply and Exit"/purchase-confirm step**, not at
+  carousel-item-selection time. Since our grid only replaces
+  *browsing*, still calling the exact same `panel.onSelectItem` vanilla
+  itself uses, and never touches "Apply and Exit" at all, this
+  confirmation should already fire automatically without any new code
+  — didn't build a duplicate dialog system.
+- User's follow-up revealed the REAL gap: vehicle-bound items
+  currently installed elsewhere don't show in our grid **at all**.
+  Root cause: `FilterTypes.USED_UP` (`customization_carousel.py`,
+  Phase 1 finding) is a real, always-shared filter on the underlying
+  `CustomizationCarouselDataProvider` — both our grid and the vanilla
+  strip read the exact same `panel.carouselItems`, and by default
+  (`applied=False`, `inverse=True` → `isEnabled()=True`) it hides
+  anything `isItemUsedUp()` flags, unless the user manually opts in
+  via a filter-popover checkbox we never exposed. Confirmed via the
+  filter's own inverse-XOR logic (`isEnabled() = isApplied() ^
+  isInverse`) — counterintuitively, `updateCarouselFilter(USED_UP,
+  True)` is what *disables* the hiding criteria and reveals them.
+
+**Applied**: `CustomizationHook.py` now forces this filter open
+(`_revealUsedUpItems()`, remembering the original state) when the
+Customization panel populates, and restores it
+(`_restoreUsedUpFilter()`) when the panel disposes — matching vanilla's
+own `__rebuildCarousel()` pattern (`invalidateFilteredItems()` +
+`buildList()` + `refresh()`) so the change actually takes effect, not
+just the internal flag. **This also affects the vanilla strip while
+our mod is active** — a deliberate tradeoff (both views share the same
+data provider, no way to show it in only one), and it's fully restored
+on leaving the screen, so no lasting side effect.
+
+**Also added, matching the user's second ask**: `getCurrentItems()`
+now returns a real `usedUp` flag per item (`isItemUsedUp(item,
+panel.service)`, the same real helper vanilla's own VO-building code
+uses) — items already installed on THIS vehicle/outfit are correctly
+excluded (only genuinely-elsewhere items are flagged). AS3: a small
+"On another vehicle" caption in a warning-orange tone, shown only when
+flagged — required growing `CELL_SIZE` (96→110) to fit the extra line
+without cramming.
+
+**Genuinely unverified going into the next test**: whether calling
+`buildList()`/`invalidateFilteredItems()`/`refresh()` from
+`onPanelPopulate` (which fires right after `CustomizationBottomPanel._populate()`
+returns, but *before* vanilla's own deferred
+`BigWorld.callback(0.0, ...)`-scheduled initial `__onTabChanged` call
+that normally does the first build) works correctly this early in the
+lifecycle, or races/conflicts with that deferred call. Wrapped in
+try/except so a failure degrades to "used-up items stay hidden,
+logged" rather than crashing, but not yet confirmed live either way.
+
+## 7ad. Session 1 — used-up reveal: confirmed real regression, timing fix applied; selection itself still rejected (separate, legitimate finding)
+
+Live test of v0.0.33 confirmed both halves:
+- **Reveal worked**: item count went 174→276, and the screenshot even
+  showed WG's own real "On other vehicles" tag on an unrelated rental
+  item in the vanilla strip — independent confirmation this is a real
+  game concept we're now correctly surfacing more of, not something
+  invented.
+- **Real regression, exactly the risk flagged going in**: ~250+
+  `failed to resolve item/icon` log lines — never happened in any
+  prior test. Item names/icons in the actual rendered grid still
+  looked correct though, which narrows it: the exception is most
+  likely happening at the *last* line inside the try block
+  (`isItemUsedUp(...)`, the one genuinely new call this session),
+  *after* `name`/`icon`/`season` had already been successfully
+  assigned — Python doesn't roll back prior assignments when a later
+  line in the same `try` throws, so the item still renders with mostly
+  correct data despite the exception firing. Not fully confirmed
+  (the log message was generic), so added `repr(sys.exc_info()[1])`
+  to the log line for next time instead of re-guessing blind.
+- **Fix applied**: `_revealUsedUpItems()` was being called
+  synchronously inside `onPanelPopulate`, immediately after
+  `_populate()` returns — but vanilla's *own* first carousel build is
+  itself deferred via `BigWorld.callback(0.0, ...)` (confirmed, Phase
+  1). Calling our rebuild synchronously meant we ran *before* that
+  deferred initial build, almost certainly racing/interfering with
+  whatever state it sets up. Changed to
+  `BigWorld.callback(0.1, _revealUsedUpItems)` — deliberately
+  `0.1`s, not `0.0`s, to land safely after vanilla's same-tick `0.0`
+  callback rather than risk same-tick ordering ambiguity. Not yet
+  re-tested live.
+
+**Separate, legitimate finding — not a bug, a real business rule**:
+clicking a revealed "used up elsewhere" item showed a clean, real game
+error, `Unable to apply: Tenacious Grip is not in the inventory` — no
+Python exception, no crash, just a proper rejection toast. This means
+simply revealing these items isn't enough to let them be *selected*
+via the simple `onSelectItem` path — they likely need a different
+flow (an explicit "reassign from other vehicle" action) that vanilla's
+own UI must expose somewhere we haven't found yet. **This also revises
+§7ac's hypothesis**: the "Apply and Exit" confirmation dialog
+(`containsVehicleBound`/`CUSTOMIZATION_INSTALL_BOUND`) can only ever
+fire for items that make it into the purchase cart in the first
+place — if `onSelectItem`/`_selectCommonItem` rejects a used-up item
+immediately, that later confirmation step is never reached at all via
+our simple grid-click path. Not yet investigated further — flagged as
+the next open question if the user wants to pursue actually being able
+to *select* these items, not just see them.
+
+## 7ae. Session 1 — root cause confirmed exactly: dependency-injection decorator collision, fixed; grayed-out treatment added
+
+The improved `repr(sys.exc_info()[1])` logging (§7ad) paid off
+immediately — every failure was the exact same, precise error:
+```
+TypeError("isItemUsedUp() got multiple values for keyword argument 'service'",)
+```
+Re-checked the real source: `isItemUsedUp` carries
+`@dependency.replace_none_kwargs(service=ICustomizationService)`
+(`shared.py`) — a decorator that auto-injects a real service instance
+as the `service` **keyword** when the caller doesn't supply one.
+Calling it as `isItemUsedUp(item, _panel.service)` passed
+`_panel.service` *positionally*, and the decorator's own injection
+still tried to supply `service=` as a keyword on top of that,
+colliding. **Fix**: call `isItemUsedUp(item)` with no second
+argument at all — trust the decorator to inject the correct default
+service (the same real singleton `_panel.service` would have
+resolved to anyway). This is the third time this session a
+`@dependency.replace_none_kwargs`-style decorator's exact calling
+convention mattered — worth remembering as a recurring category of
+mistake in this codebase, not a one-off.
+
+Also added, per user request: cells where `usedUp` is true now render
+at `alpha = 0.5` (whole cell dimmed — icon, name, badge together) as a
+clear "unavailable right now" visual, on top of the existing "On
+another vehicle" text label. Compiled clean (6092 bytes). Not yet
+re-tested live.
+
+**Still open, deliberately deferred**: showing *which specific
+vehicle* has the item — needs iterating the player's whole garage and
+checking each vehicle's outfit, a real research question not yet
+investigated. Flagged to the user as a bigger follow-up rather than
+folded into this fix.
+
+## 7af. Session 1 — availability filter added (All / Available / On Other Vehicles)
+
+Confirmed working (label + dimming), then asked for a third filter
+dimension on top of Favorites/Season: item availability. Since
+`usedUp` was already computed per item (§7ac), this was purely an AS3
+UI addition, no new Python data needed. Added a second filter-bar row
+("All Items" / "Available" / "On Other Vehicles", mutually exclusive,
+same `FilterButton` component) — unlike the season row, this one is
+**not** gated to the Camo tab, since `usedUp` is meaningful on every
+tab. `FilterButton` gained an optional `width` constructor param
+(defaulting to the existing 76px) since "On Other Vehicles" needed
+more room than the original fixed width allowed. Filter bar grew to
+two rows (`FILTER_BAR_HEIGHT` 30→60), window height unchanged overall
+shape-wise (viewport shrinks to match). Compiled clean (6585 bytes).
+Not yet live-tested.
+
 ## 7. New source, user-provided: `izeberg/wot-src`
 
 User-supplied: <https://github.com/izeberg/wot-src> — a public

@@ -12,9 +12,11 @@ package camoViewer {
   public class CamoGridWindow extends AbstractWindowView {
 
     private static const COLUMNS:int = 6;
-    private static const CELL_SIZE:int = 96;
+    private static const CELL_SIZE:int = 110;
+    private static const USED_UP_COLOR:uint = 0xe2925a;
     private static const PADDING:int = 12;
-    private static const FILTER_BAR_HEIGHT:int = 30;
+    private static const FILTER_BAR_HEIGHT:int = 60;
+    private static const FILTER_ROW_HEIGHT:int = 26;
     private static const VIEWPORT_HEIGHT:int = 450;
     private static const WHEEL_STEP:int = 40;
     private static const CELL_COLOR:uint = 0x2a2f36;
@@ -31,6 +33,10 @@ package camoViewer {
     private static const SEASON_DESERT:int = 4;
     private static const FAVORITES_ONLY:int = -1;
 
+    private static const AVAILABILITY_ALL:int = 0;
+    private static const AVAILABILITY_AVAILABLE:int = 1;
+    private static const AVAILABILITY_ON_OTHER:int = 2;
+
     public var py_selectItem:Function;
     public var py_toggleFavorite:Function;
 
@@ -41,8 +47,10 @@ package camoViewer {
     private var allItems:Array = [];
     private var favoritesButton:FilterButton;
     private var seasonButtons:Array = [];
+    private var availabilityButtons:Array = [];
     private var favoritesOnly:Boolean = false;
     private var seasonFilter:int = 0;
+    private var availabilityFilter:int = AVAILABILITY_ALL;
 
     public function CamoGridWindow() {
       super();
@@ -73,13 +81,14 @@ package camoViewer {
     }
 
     private function buildFilterBar():void {
-      var buttonY:int = PADDING;
-      var buttonX:int = PADDING;
       var gap:int = 4;
+      var row1Y:int = PADDING;
+      var row2Y:int = PADDING + FILTER_ROW_HEIGHT + 4;
+      var buttonX:int = PADDING;
 
       favoritesButton = new FilterButton('Favorites', FAVORITES_ONLY);
       favoritesButton.x = buttonX;
-      favoritesButton.y = buttonY;
+      favoritesButton.y = row1Y;
       favoritesButton.addEventListener(MouseEvent.CLICK, onFavoritesButtonClick);
       addChild(favoritesButton);
       buttonX += 76 + gap;
@@ -94,13 +103,40 @@ package camoViewer {
       for (i = 0; i < seasons.length; i++) {
         var btn:FilterButton = new FilterButton(seasons[i].label, seasons[i].value);
         btn.x = buttonX;
-        btn.y = buttonY;
+        btn.y = row1Y;
         btn.addEventListener(MouseEvent.CLICK, onSeasonButtonClick);
         addChild(btn);
         seasonButtons.push(btn);
         buttonX += 76 + gap;
       }
       seasonButtons[0].setActive(true);
+
+      buttonX = PADDING;
+      var availability:Array = [
+        {label: 'All Items', value: AVAILABILITY_ALL},
+        {label: 'Available', value: AVAILABILITY_AVAILABLE},
+        {label: 'On Other Vehicles', value: AVAILABILITY_ON_OTHER}
+      ];
+      for (i = 0; i < availability.length; i++) {
+        var availBtn:FilterButton = new FilterButton(availability[i].label, availability[i].value, 108);
+        availBtn.x = buttonX;
+        availBtn.y = row2Y;
+        availBtn.addEventListener(MouseEvent.CLICK, onAvailabilityButtonClick);
+        addChild(availBtn);
+        availabilityButtons.push(availBtn);
+        buttonX += 108 + gap;
+      }
+      availabilityButtons[0].setActive(true);
+    }
+
+    private function onAvailabilityButtonClick(event:MouseEvent):void {
+      var clicked:FilterButton = FilterButton(event.currentTarget);
+      availabilityFilter = clicked.value;
+      var i:int;
+      for (i = 0; i < availabilityButtons.length; i++) {
+        availabilityButtons[i].setActive(availabilityButtons[i] == clicked);
+      }
+      applyFilters();
     }
 
     public function as_showSeasonFilter(value:Boolean):void {
@@ -140,6 +176,12 @@ package camoViewer {
           continue;
         }
         if (seasonFilter != 0 && (int(item.season) & seasonFilter) == 0) {
+          continue;
+        }
+        if (availabilityFilter == AVAILABILITY_AVAILABLE && Boolean(item.usedUp)) {
+          continue;
+        }
+        if (availabilityFilter == AVAILABILITY_ON_OTHER && !Boolean(item.usedUp)) {
           continue;
         }
         visible.push(item);
@@ -191,6 +233,9 @@ package camoViewer {
       cell.intCD = Number(item['intCD']);
       cell.applied = Boolean(item['applied']);
       cell.favorite = Boolean(item['favorite']);
+      if (Boolean(item['usedUp'])) {
+        cell.alpha = 0.5;
+      }
       drawCellBackground(cell, CELL_COLOR);
       cell.addEventListener(MouseEvent.CLICK, onCellClick);
       cell.addEventListener(MouseEvent.MOUSE_OVER, onCellOver);
@@ -210,12 +255,12 @@ package camoViewer {
 
       var label:TextField = new TextField();
       label.width = CELL_SIZE - 14;
-      label.height = CELL_SIZE - 66;
+      label.height = 30;
       label.wordWrap = true;
       label.selectable = false;
       label.mouseEnabled = false;
       label.x = 4;
-      label.y = 64;
+      label.y = 60;
       label.text = String(item['name']);
 
       var fmt:TextFormat = new TextFormat();
@@ -225,6 +270,25 @@ package camoViewer {
       label.defaultTextFormat = fmt;
 
       cell.addChild(label);
+
+      if (Boolean(item['usedUp'])) {
+        var usedUpLabel:TextField = new TextField();
+        usedUpLabel.width = CELL_SIZE - 14;
+        usedUpLabel.height = 14;
+        usedUpLabel.selectable = false;
+        usedUpLabel.mouseEnabled = false;
+        usedUpLabel.x = 4;
+        usedUpLabel.y = CELL_SIZE - 22;
+        usedUpLabel.text = 'On another vehicle';
+
+        var usedUpFmt:TextFormat = new TextFormat();
+        usedUpFmt.color = USED_UP_COLOR;
+        usedUpFmt.size = 9;
+        usedUpLabel.setTextFormat(usedUpFmt);
+        usedUpLabel.defaultTextFormat = usedUpFmt;
+
+        cell.addChild(usedUpLabel);
+      }
 
       var star:Sprite = new Sprite();
       star.x = CELL_SIZE - 20;
