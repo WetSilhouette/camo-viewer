@@ -13,8 +13,8 @@ package camoViewer {
 
   public class CamoGridWindow extends AbstractWindowView {
 
-    private static const COLUMNS:int = 6;
-    private static const CELL_SIZE:int = 110;
+    private static const COLUMNS:int = 5;
+    private static const CELL_SIZE:int = 132;
     private static const USED_UP_COLOR:uint = 0xe2925a;
     private static const PADDING:int = 12;
     private static const FILTER_BAR_HEIGHT:int = 90;
@@ -65,7 +65,9 @@ package camoViewer {
       window.title = 'camo-viewer';
       width = COLUMNS * CELL_SIZE + PADDING * 2;
       height = FILTER_BAR_HEIGHT + VIEWPORT_HEIGHT + PADDING * 2;
-      as_setGeometry(App.appWidth - width - WINDOW_MARGIN_RIGHT, WINDOW_Y, width, height);
+      var winX:Number = Math.max(0, App.appWidth - width - WINDOW_MARGIN_RIGHT);
+      var winY:Number = Math.max(0, WINDOW_Y);
+      as_setGeometry(winX, winY, width, height);
 
       var bg:Shape = new Shape();
       bg.graphics.beginFill(0x1b1f24);
@@ -234,13 +236,25 @@ package camoViewer {
       rect.y = 0;
       content.scrollRect = rect;
 
+      var rows:int = Math.ceil(items.length / COLUMNS);
+      contentHeight = rows * CELL_SIZE;
+
+      // Cells only paint CELL_SIZE-6 of their CELL_SIZE slot, leaving a
+      // thin gap on their right/bottom edge with no graphics at all - and
+      // content itself has none either, so the mouse wheel listener never
+      // triggers there. A full-coverage invisible fill behind the cells
+      // gives content real hit-test area across every pixel of the grid,
+      // gaps included.
+      var hitArea:Shape = new Shape();
+      hitArea.graphics.beginFill(0x000000, 0);
+      hitArea.graphics.drawRect(0, 0, COLUMNS * CELL_SIZE, Math.max(contentHeight, VIEWPORT_HEIGHT));
+      hitArea.graphics.endFill();
+      content.addChild(hitArea);
+
       var i:int;
       for (i = 0; i < items.length; i++) {
         addCell(items[i], i);
       }
-
-      var rows:int = Math.ceil(items.length / COLUMNS);
-      contentHeight = rows * CELL_SIZE;
     }
 
     private function addCell(item:Object, index:int):void {
@@ -256,6 +270,7 @@ package camoViewer {
       cell.intCD = Number(item['intCD']);
       cell.applied = Boolean(item['applied']);
       cell.favorite = Boolean(item['favorite']);
+      cell.otherVehicleName = String(item['otherVehicleName']);
       if (Boolean(item['usedUp'])) {
         cell.alpha = 0.5;
       }
@@ -278,35 +293,42 @@ package camoViewer {
 
       var label:TextField = new TextField();
       label.width = CELL_SIZE - 14;
-      label.height = 30;
+      label.height = 28;
       label.wordWrap = true;
       label.selectable = false;
       label.mouseEnabled = false;
       label.x = 4;
-      label.y = 60;
+      label.y = 76;
       label.text = String(item['name']);
 
       var fmt:TextFormat = new TextFormat();
       fmt.color = 0x9aa5b1;
-      fmt.size = 11;
+      fmt.size = 13;
       label.setTextFormat(fmt);
       label.defaultTextFormat = fmt;
 
       cell.addChild(label);
 
       if (Boolean(item['usedUp'])) {
+        var vehicleName:String = cell.otherVehicleName;
+        var displayName:String = vehicleName != '' ? vehicleName : 'another vehicle';
+        if (displayName.length > 42) {
+          displayName = displayName.substr(0, 41) + '…';
+        }
+
         var usedUpLabel:TextField = new TextField();
         usedUpLabel.width = CELL_SIZE - 14;
-        usedUpLabel.height = 14;
+        usedUpLabel.height = 22;
+        usedUpLabel.wordWrap = true;
         usedUpLabel.selectable = false;
         usedUpLabel.mouseEnabled = false;
         usedUpLabel.x = 4;
-        usedUpLabel.y = CELL_SIZE - 22;
-        usedUpLabel.text = 'On another vehicle';
+        usedUpLabel.y = 104;
+        usedUpLabel.text = 'On ' + displayName;
 
         var usedUpFmt:TextFormat = new TextFormat();
         usedUpFmt.color = USED_UP_COLOR;
-        usedUpFmt.size = 9;
+        usedUpFmt.size = 10;
         usedUpLabel.setTextFormat(usedUpFmt);
         usedUpLabel.defaultTextFormat = usedUpFmt;
 
@@ -387,7 +409,7 @@ package camoViewer {
     private function onIconChange(event:Event):void {
       var icon:Image = Image(event.target);
       icon.width = CELL_SIZE - 14;
-      icon.height = 56;
+      icon.height = 68;
     }
 
     private function drawCellBackground(cell:GridCell, color:uint):void {
@@ -414,5 +436,6 @@ package camoViewer {
         py_selectItem(cell.intCD);
       }
     }
+
   }
 }

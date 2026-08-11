@@ -6,6 +6,7 @@ package camoViewer {
     public var intCD:Number;
     public var applied:Boolean = false;
     public var favorite:Boolean = false;
+    public var otherVehicleName:String = '';
 
     public function GridCell() {
       super();

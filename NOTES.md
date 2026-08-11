@@ -1664,6 +1664,502 @@ a different interaction category (focus handling, IME/keyboard
 routing) that hasn't been exercised at all yet in this Scaleform
 context.
 
+## 7ai. Session 1 — researched "remove camo from another vehicle": technically feasible, real path found, not yet implemented
+
+User asked to research the original deferred ask from §7ac/§7ad/§7ae properly:
+actually letting the player free up a vehicle-bound item that's installed on
+a *different* vehicle, from inside our grid, with a confirm popup — not just
+see/filter it. Pure source research this pass, no code written.
+
+**Confirmed: vanilla itself has no single-click "remove from other vehicle"
+UI action.** Checked the real right-click context menu
+(`customization_cm_handlers.py`, `CustomizationItemCMHandler.__getRemoveBtn`)
+— its `REMOVE_FROM_TANK` option is only ever enabled when
+`outfit.has(item)` is true for the **currently open** vehicle's modified
+outfit (`self.__ctx.mode.getModifiedOutfit()` / `commonModifiedOutfit`).
+Every removal method on the mode context (`removeItem`, `removeItemsFromSeason`,
+`removeStyle`, `custom_mode.py`'s `_removeItem`) operates purely on
+`self._modifiedOutfits`, in-memory state scoped to whichever vehicle is
+currently loaded into the customization screen's `CustomizationModeCtx`.
+In stock WoT, freeing an item genuinely requires switching to the other
+vehicle in the garage and editing its outfit there. This matches what the
+user already observed empirically.
+
+**But the underlying commit mechanism is NOT scoped to "the open vehicle" —
+it's a generic per-vehicle server call, and that's the real opening:**
+`custom_mode.py`'s `_applyItems` calls
+`OutfitApplier(g_currentVehicle.item, requestData).request()`
+(`gui/shared/gui_items/processors/common.py:168`). `OutfitApplier.__init__`
+takes `(vehicle, outfitData)` as a **plain argument, not a global** — it only
+uses `vehicle.invID` and `vehicle.descriptor` internally
+(`_request`: `BigWorld.player().shop.buyAndEquipOutfit(self.vehicle.invID,
+requestData, callback)`). `g_currentVehicle.item` is just *what vanilla
+happens to pass* — nothing stops passing a *different* `Vehicle` GUI item
+object here. `Processor.request()` is `@adisp_async`-wrapped
+(`processors/__init__.py:126`), so it's callable as plain
+`OutfitApplier(vehicle, outfitData).request(callback=onDone)` from ordinary
+(non-`adisp_process`) code — no need to fake being inside vanilla's own
+coroutine machinery.
+
+**Confirmed each `Vehicle` GUI item carries its own outfit data
+independently of the customization screen being open on it**:
+`vehicle.py`'s `outfits` property / `getOutfit(season)` (line ~2002) build
+`Outfit` objects straight from `vehicle._outfitComponents` — no dependency
+on `g_currentVehicle` or any active UI context. `Outfit` itself
+(`client_common/vehicle_outfit/outfit.py`) has `.copy()`, `.pack()`,
+`.getContainer(areaId).slotFor(slotType).remove(regionIdx)` — the exact same
+mutate-then-pack pattern `custom_mode.py._removeItem` already uses on the
+live outfit, just usable here on a copy of some *other* vehicle's outfit.
+
+**Confirmed: finding which vehicle(s) hold a "used up" item doesn't need
+garage iteration at all** — this also directly answers §7ae's separate
+deferred question. `Customization` items (`c11n_items.py:488-492`) expose
+`item.getInstalledVehicles()` → `set` of vehicle `intCD`s currently wearing
+it, and `item.getBoundVehicles()` for the broader "bound to" set — both
+backed by a real `_installedVehicles`/`_boundVehicles` dict already loaded
+with the item, no extra request needed. Resolving an `intCD` back to a
+`Vehicle` object (for its name/`invID`) just means matching it against
+`itemsCache.items.getVehicles()` (`ItemsRequester.getVehicles`) — cheap,
+garage-sized, not a real cost.
+
+**Net plan for actual implementation** (not yet built):
+1. `getCurrentItems()` already flags `usedUp`; extend it to also resolve
+   `item.getInstalledVehicles()` → vehicle name(s), for the label AND to
+   know the target(s) for removal.
+2. On a new "remove from other vehicle" action (context-menu-style, or a
+   button next to the existing "On another vehicle" caption): look up the
+   `Vehicle` object by matching `intCD` from `itemsCache.items.getVehicles()`,
+   `vehicle.getOutfit(item.season)` (or iterate seasons the item could be
+   in), copy it, remove the item's slot, `OutfitApplier(vehicle,
+   [(newOutfit, season)]).request(callback=...)`.
+3. Confirm dialog: build our own simple AS3 popup in `CamoGridWindow`
+   rather than reusing vanilla's `ConfirmC11nSellMeta`/dialog-meta system —
+   those dialog *types* are hardcoded for BUY/SELL, not this action; a
+   small custom confirm inside our own window is simpler and matches how
+   this mod already owns its whole UI surface.
+
+**Explicitly flagged as a bigger risk than anything built so far, not
+something to just build silently**: every prior mutation this mod performs
+goes through `panel.onSelectItem`, vanilla's own exact call, on the vehicle
+the player is already looking at. This would be the first time the mod
+constructs and submits a server request **for a vehicle the player isn't
+even viewing**, bypassing the customization screen's own validation/UI
+entirely (still routed through the same `OutfitApplier` + its
+`CustomizationPurchaseValidator` plugin, so not unvalidated, but a
+meaningfully bigger blast radius than a filter or a label). Recommending
+this go through a real confirm dialog and a deliberately narrow first
+version (single item, single vehicle, no batch) before anything fancier.
+Not started; awaiting the user's go-ahead specifically for this one given
+the higher stakes.
+
+## 7aj. Session 1 — remove-from-other-vehicle implemented per §7ai's plan (v0.0.39, not yet live-tested)
+
+Built the feature §7ai researched: an actionable "Remove from that vehicle"
+link on used-up cells, with a real confirm popup, that submits a modified
+outfit for the *owning* vehicle via the same `OutfitApplier` vanilla itself
+uses — without switching the garage's active vehicle.
+
+**New file `RemoveFromVehicle.py`**: `removeFromVehicle(item, vehicleIntCD,
+callback)` — resolves the target `Vehicle` GUI item by scanning
+`itemsCache.items.getVehicles()` for a matching `intCD` (no direct
+intCD→invID lookup exists; this is real, garage-sized, and cheap), then for
+every `(season, outfit)` in `vehicle.outfits.items()` copies the outfit,
+searches `itemsFull()` for a slot holding this item's `intCD`, and calls
+`slot.remove(regionIdx)` directly on the yielded slot reference (confirmed
+`itemsFull()` already hands back live slot objects, no need to
+re-derive areaId/slotType via `getContainer().slotFor()` like
+`custom_mode.py._removeItem` does — a small simplification over the
+vanilla pattern, made possible because we're not tracking a `slotId` for
+later reuse). Every season the item was actually found in gets included in
+one `requestData` list, submitted in a single
+`OutfitApplier(vehicle, requestData).request(callback=onResponse)` call —
+same commit path as vanilla's own "Apply and Exit", same
+`CustomizationPurchaseValidator` plugin runs server-side. `Processor.request`
+is `@adisp_async`, confirmed callable with a plain `callback=` kwarg from
+non-`adisp_process` code (§7ai).
+
+**`CustomizationHook.py`**: added `_getOtherVehicleIntCD(item)` (diffs
+`item.getInstalledVehicles()` against `g_currentVehicle.item.intCD`) and
+`_getVehicleName(vehicleIntCD)` (same `getVehicles()` scan). `getCurrentItems()`
+now includes `otherVehicleIntCD`/`otherVehicleName` per item — resolved only
+when `usedUp` is true and a same-garage owning vehicle can actually be
+found (deliberately silent/absent otherwise: a "used up" item can also mean
+"no purchase copies left" with no owned-vehicle install at all, a different,
+unrelated case this feature doesn't try to handle). New
+`removeItemFromOtherVehicle(intCD, callback)` re-resolves the item and
+target vehicle server-side (never trusts whatever the AS3 side echoes back)
+and delegates to `RemoveFromVehicle`.
+
+**`CamoGridWindow.py`**: `py_removeFromVehicle(intCD)` calls the hook with a
+callback that, on success, refreshes the grid via the existing
+`getCurrentItems()`/`as_setItems` path (same one tab-switch already uses)
+before telling AS3 the outcome via `as_removeFromVehicleResult(intCD,
+success)`. Wrapped in try/except: a real risk given this now involves a
+genuine server round-trip — the player could close the grid window (or
+switch customization tabs, which self-destroys the window per §7u) before
+the response arrives, and `self.flashObject` would then be gone.
+
+**AS3 (`CamoGridWindow.as`, `GridCell.as`)**: `GridCell` gained
+`itemName`/`otherVehicleIntCD`/`otherVehicleName`. Used-up cells now show
+two small lines instead of one — the actual vehicle name (truncated at 18
+chars) replacing the old generic "On another vehicle" text when resolved
+(this also directly answers §7ae's separately-deferred "which vehicle"
+question), plus a clickable underlined "Remove from that vehicle" link
+(`TextField` with `mouseEnabled=true` — no `buttonMode`/`useHandCursor`,
+confirmed `TextField`-specific gotcha, §session-start memory) only when a
+target vehicle was actually resolved. `CELL_SIZE` grew 110→124 to fit the
+second line. Clicking it opens a hand-rolled modal (`confirmOverlay`, full
+window-sized semi-transparent `Shape` + a centered panel `Sprite`, reusing
+`FilterButton` for Cancel/Remove rather than introducing a new component)
+showing "Remove '<item>' from '<vehicle>'?" — deliberately not reusing
+vanilla's `ConfirmC11nBuyMeta`/`ConfirmC11nSellMeta` dialog system, since
+those dialog *types* are hardcoded for buy/sell wording, not this action
+(matches §7ai's plan). Confirm calls `py_removeFromVehicle`, disables both
+buttons, and shows "Removing…" while awaiting the async response;
+`as_removeFromVehicleResult` closes the popup on success or re-enables it
+with a failure message otherwise.
+
+Compiled clean (8651 bytes) and packaged as v0.0.39, installed over
+v0.0.38 in the live `mods/2.3.1.1/` folder.
+
+**Explicitly not yet confirmed by a real test** (first time this session a
+feature involves an actual async server round-trip triggered from our own
+code, not just a local UI/filter change):
+- Whether `vehicle.outfits`/`itemsFull()` on a vehicle that ISN'T the
+  currently-loaded one behaves as read here — every prior confirmed use of
+  `Outfit`/slots in this codebase was on `g_currentVehicle`'s own live
+  customization context.
+- Whether the server actually accepts an outfit-apply request for a
+  vehicle that isn't "in view" the way vanilla always has it be.
+- Whether removing frees the item up immediately in `itemsCache` (so the
+  grid's next `getCurrentItems()` call sees `usedUp=False`) or needs a
+  round-trip/resync delay — if there's a delay, the immediate post-success
+  refresh might still show it as used up for a moment; not a correctness
+  bug, just a UX rough edge to watch for.
+- Multi-item/multi-season edge cases (item equipped on more than one
+  season simultaneously on the other vehicle, or the rare case where
+  `getInstalledVehicles()` returns more than one *other* vehicle — only
+  the first is targeted, silently).
+
+Deliberately kept narrow per §7ai's own recommendation: single item, single
+target vehicle, real confirm dialog, no batch actions.
+
+## 7ak. Session 1 — v0.0.39 live test: real bug found and fixed (v0.0.40, not yet re-tested)
+
+First live test of §7aj surfaced a real, if non-fatal, bug: ~100 identical
+log lines, one per used-up item, `AttributeError("'int' object has no
+attribute 'intCD'")` inside `_getVehicleName`. Root cause:
+`itemsCache.items.getVehicles()` returns an `ItemsCollection` — confirmed
+from source (`ItemsRequester.getItems`) to be a plain `dict` subclass keyed
+by vehicle `intCD`, values are `Vehicle` GUI items
+(`result[item.intCD] = item`). Both `_getVehicleName` (`CustomizationHook.py`)
+and `_findVehicle` (`RemoveFromVehicle.py`) wrote `for vehicle in
+itemsCache.items.getVehicles():` — plain iteration over a dict yields its
+**keys**, not values, so `vehicle` was actually an `int` the whole time.
+Exactly the same category of mistake as `panel.carouselItems` elsewhere in
+this codebase turning out to be a plain list of intCDs, not items — worth
+remembering as a recurring shape in this codebase: cache/collection getters
+here are very often "the thing you can index/lookup", not "the thing you
+iterate for values."
+
+**Because both call sites were already wrapped in try/except** (deliberate,
+§7aj), this degraded gracefully exactly as designed: no crash, the
+generic "On another vehicle" text is what actually rendered (confirmed by
+the user's screenshot) instead of a real vehicle name, and the whole rest
+of the grid (276 items, click-to-select, filters) worked fine per the log.
+The Remove feature itself was never exercised yet — with `_getOtherVehicleIntCD`
+still working correctly (that part doesn't touch `getVehicles()`), the
+"Remove from that vehicle" link should still have been present on used-up
+cells, just without a resolved name to show. Not fully confirmed since the
+user hasn't tried clicking Remove yet.
+
+**Fix**: replaced both call sites with a direct dict lookup —
+`itemsCache.items.getVehicles().get(vehicleIntCD)` — simpler than the
+iterate-and-compare loop it replaces, and avoids the bug category entirely
+rather than just patching the symptom. Packaged as v0.0.40, installed over
+v0.0.39. Not yet re-tested live; still waiting to see the real vehicle name
+render and to exercise the actual removal flow (click Remove → confirm →
+server round-trip → grid refresh), none of which happened in this first
+test.
+
+## 7al. Session 1 — v0.0.40 live test: vehicle name resolution fixed, removal itself still fails (styles need a different removal path, fixed in v0.0.41)
+
+§7ak's fix worked — screenshot confirms real vehicle names now render
+("On T-71 154...", "On Object 279...", etc, correctly truncated). First real
+exercise of the Remove flow itself failed cleanly though (no crash, popup
+correctly showed "Failed to remove"): log showed `intCD=19020 not found in
+any outfit of vehicle intCD=13089`.
+
+**Root cause, and it's a real gap in §7ai/§7aj's design, not a typo**: the
+item being removed was a **2D Style** (tab 7, `STYLES_2D` — the very screen
+the user's *original* ask, "remove style from another tank", was about).
+Styles are not stored as slot items the way camo/paint/decals are — checked
+`Outfit.__init__`/`pack()` (`vehicle_outfit/outfit.py`): a style is a raw
+numeric id on the outfit itself (`outfit.id`/`outfit._id`, packed as
+`component.styleId`), completely separate from the paint/camo/decal slot
+containers `itemsFull()` walks. `_findSlot()` was only ever going to find
+slot-based items (camo/paint/decal/emblem/etc) — for a style, it will
+*always* report "not found", exactly what happened. Confirmed the matching
+key: `Customization.id` (`c11n_items.py`) returns `self.descriptor.id`, the
+same raw id `Outfit._id` stores — so `outfit.id == item.id` is the correct
+membership check for styles (not `item.intCD`, which is a different,
+derived compact descriptor). Confirmed the correct removal call too:
+`Outfit.removeStyle()` (`self._id = 0` + clearing progression/serial
+fields) — the exact same method vanilla's own `customization_mode.py:406`
+and `styled_mode.py`'s `removeStyle()` call for the *current* vehicle;
+reusing it here for another vehicle's outfit copy is consistent with how
+every other part of this feature reuses vanilla's own primitives rather
+than inventing new ones.
+
+**Fix**: `RemoveFromVehicle.py` now branches on `item.itemTypeID ==
+GUI_ITEM_TYPE.STYLE` — styles go through `outfit.id`/`outfit.removeStyle()`,
+everything else keeps the original slot-search-and-remove path. Packaged as
+v0.0.41. Not yet re-tested — this is the first version where a Style
+removal has a real chance of actually working end-to-end; a plain
+camo/paint/decal removal was never actually exercised live either (the
+user's live tests so far have all been on the Styles tab), so that path is
+still just as unconfirmed as before.
+
+## 7am. Session 1 — v0.0.41 live test: style found and matched correctly, but the response never reached our UI (fixed the trap, root cause still open, v0.0.42)
+
+§7al's style-vs-slot fix worked as far as it went: log shows `RemoveFromVehicle:
+removing intCD=11596 from vehicle intCD=26641, seasons=[8, 1, 2, 4]` — the
+item was correctly matched via `outfit.id == item.id` in all four season
+outfits and `OutfitApplier(...).request(...)` was issued. But the confirm
+popup then sat on "Removing…" indefinitely (screenshot), with **no**
+`RemoveFromVehicle: server response success=...` log line ever appearing —
+not even after 23 real seconds, right up until the player closed the
+Customization screen entirely (visible in the log as an unprompted
+`Navigating to subScope/subLayer/hangar`, almost certainly the player
+giving up on the frozen popup and backing out manually).
+
+**Real, if indirect, evidence the removal actually succeeded server-side
+anyway**: after the screen was reopened, an `onClientUpdate` diff arrived
+(`rev: 247`) containing real inventory deltas keyed on vehicle intCD 26641 —
+including a `3: {15507: {26641: 6}}` entry, which lines up with
+`boundInventoryCount` going from "installed" back to "6 free copies bound to
+this vehicle" for what's almost certainly the same style, freed up. So the
+actual server-side removal this feature is meant to perform is very likely
+working correctly — **the bug is specifically in getting the success
+callback back to our own UI**, not in the removal logic itself. Checked
+`Processor.request()`'s internals (`__confirm()`/`__validate()`) — with only
+a `CustomizationPurchaseValidator` (sync, no confirmator) attached, neither
+step should be capable of hanging on its own; the actual cause (a slow real
+server round-trip vs. something swallowing the callback inside the adisp
+coroutine machinery when `request()` is invoked from a plain lambda instead
+of another `adisp_process`, vs. an uncaught exception inside
+`self.flashObject.as_removeFromVehicleResult(...)` itself) is **not yet
+pinned down** — genuinely needs another live data point, not resolvable
+from source alone.
+
+**Fixed regardless, since it's a real problem either way**: the popup
+previously disabled *both* Cancel and Confirm while "Removing…", trapping
+the user with no way out if the response is ever slow or lost — exactly
+what happened. Now only the Confirm button disables; Cancel/close stays
+live the whole time (message updated to "Removing… (you can close this and
+check back later)" to make that explicit) — a late callback arriving after
+the popup's been closed is already handled harmlessly (§7aj's dead-window
+guard, `pendingRemoveCD != intCD` check in `as_removeFromVehicleResult`).
+Also added a log line immediately after `.request(...)` returns
+(confirms the call didn't hang or throw synchronously) and switched the
+window-closed exception log to include `repr(sys.exc_info()[1])` instead of
+a generic message, on the chance the next test reveals it's actually an
+AS3-side exception in `as_removeFromVehicleResult` rather than a lost
+server response. Packaged as v0.0.42.
+
+**Net effect for the user**: even before this UX fix, the underlying
+removal likely already worked — v0.0.41 may not need a full retry from
+scratch, just confirming the item shows as free next time the grid opens.
+v0.0.42 mainly makes sure a slow/lost response can't trap the popup again,
+plus gives the next attempt sharper logs if it still hangs.
+
+## 7an. Session 1 — CONFIRMED: the core premise of §7ai/§7aj is wrong — server silently drops outfit-apply for an off-screen vehicle
+
+v0.0.42 test #2 reproduced the exact same silent hang (request issued,
+logged, then total silence for ~13s until the user closed the screen) —
+now two-for-two identical failures on two different items/vehicles, ruling
+out a one-off network fluke. This time the user directly verified the
+ground truth: **opened that other vehicle's own customization screen and
+confirmed the item was still installed there** — the removal did not
+happen server-side either. This overturns §7ac/§7ai's working theory
+(built from real, correctly-read source — `OutfitApplier(vehicle,
+outfitData)` genuinely accepts any vehicle object at the *client* Python
+level, no exception, no rejection) with a fact only live testing could
+surface: **the server (or the native BigWorld avatar-entity layer beneath
+`Shop.buyAndEquipOutfit`/`CMD_VEH_APPLY_OUTFIT`) appears to silently ignore
+an outfit-apply request for a vehicle that isn't the one currently "in
+view"/selected server-side — no error code, no callback at all**, which is
+indistinguishable from a dropped packet from the client's perspective and
+isn't visible anywhere in the client source this project has access to
+(server code isn't in this repo).
+
+**§7ak's earlier "it probably worked" reading of the `onClientUpdate` diff
+(rev 247, vehicle 26641) is now most likely a coincidence** — probably an
+unrelated inventory sync — not evidence of success. Retracting that
+conclusion; the honest state is "removal has never been confirmed to work,
+and has now been directly disproven once."
+
+**This is a real design fork, not a bug fix** — flagged to the user rather
+than silently building further, since the only way to keep the "remove in
+place, without leaving this screen" promise would be a materially bigger
+change: actually switching the live vehicle context to the target vehicle,
+applying the removal there (the one path we know works, since it's exactly
+what vanilla itself does), then switching back — a heavier, more invasive
+operation (model/scene reload, visible camera/hangar changes, a new
+failure mode if the switch-back doesn't happen cleanly) than anything this
+mod has done. The alternative is to keep the "which vehicle" information
+(already working, genuinely useful on its own) but drop the in-place
+removal action, pointing the player to go edit that vehicle directly
+instead — the always-reliable path, just not one-click. Decision deferred
+to the user; not implementing either without a clear direction given the
+jump in risk/complexity either way.
+
+## 7ao. Session 1 — decision: drop in-place removal, keep info-only (v0.0.43)
+
+User directly verified the ground truth requested in §7an: reopened the
+target vehicle's own customization screen and confirmed the item was
+**still installed there** — the removal genuinely never happened
+server-side, twice in a row, no ambiguity left. Given the choice between
+(a) a much bigger vehicle-context-switch implementation, (b) keeping the
+broken action in place for later, or (c) dropping the action and keeping
+just the informational "on vehicle X" label, the user picked (c).
+
+**Reverted, cleanly (not just disabled/hidden)**: deleted
+`RemoveFromVehicle.py` entirely; removed `removeItemFromOtherVehicle` from
+`CustomizationHook.py` (kept `_getOtherVehicleIntCD`/`_getVehicleName` — still
+needed for the label); removed `py_removeFromVehicle`/
+`__onRemoveFromVehicleDone` from `CamoGridWindow.py`; AS3
+(`CamoGridWindow.as`) lost the entire confirm-overlay code path
+(`showRemoveConfirm`, both click handlers, `hideRemoveConfirm`,
+`as_removeFromVehicleResult`), the `onRemoveLinkClick` handler, and the
+now-unused `otherVehicleIntCD`/`itemName` fields on `GridCell`. `CELL_SIZE`
+reverted 124→110 and the used-up label went back to a single line — the
+grid is visually and structurally back to §7ae's state, just with a real
+vehicle name instead of the generic "On another vehicle" text (§7ak/§7al's
+genuinely-useful part of this arc, kept). Compiled clean, notably smaller
+(7088 bytes vs 8679 with the removal UI). Packaged as v0.0.43.
+
+**Where this leaves the original ask**: "remove style from another tank
+with an approving popup" (the very first framing, back in §7ac) turned out
+to not be buildable as a quiet background action — WG's own client only
+ever supports editing the outfit of whichever vehicle's customization
+screen is actually open, and nothing this mod tried could get the server to
+accept a change for an off-screen vehicle. The label (which vehicle it's
+on) is a real, working, useful piece of what was asked for and is staying;
+the "remove it from here" half is not happening without a much larger
+vehicle-switching implementation, which hasn't been requested.
+
+## 7ap. Session 1 — v0.0.43 follow-up: bigger cells/text, multi-vehicle label, defensive window-position clamp (v0.0.44, not yet live-tested)
+
+Three requests off the v0.0.43 screenshot:
+
+1. **"Window seems to be out of bounds"** — a red box the user drew along
+   the window's left edge. Genuinely can't diagnose this precisely from a
+   single cropped screenshot (no visibility into the user's actual screen
+   resolution/UI scale, and no way to distinguish "window positioned wrong"
+   from "native window chrome/decorator rendering artifact" — the latter
+   isn't something this mod draws). Took the cheap, safe, no-downside step
+   regardless of cause: `as_setGeometry` now clamps both `x` and `y` to
+   never go negative (`Math.max(0, ...)`), so if `App.appWidth` were ever
+   smaller than expected the window can no longer be pushed off-screen to
+   the left. Didn't touch total window width to isolate this from ask #2
+   below (if it's a width problem, this test will help say so). If this
+   doesn't resolve it, need a full uncropped screenshot showing the whole
+   screen next time, not just the window.
+2. **Bigger cells/text**: `COLUMNS` 6→5, `CELL_SIZE` 110→132 — deliberately
+   chosen so `COLUMNS * CELL_SIZE` (660) is unchanged from before, meaning
+   total window width is identical to v0.0.43 despite each cell being ~20%
+   bigger — keeps this change independent of ask #1 rather than confounding
+   both at once. Icon height 56→68, name font 11→13, used-up-label font
+   9→10, proportionally.
+3. **"Camos on several vehicles still show only one"**: real gap in
+   §7ak/§7al's original implementation — `_getOtherVehicleIntCD` (singular)
+   only ever returned the first non-current vehicle from
+   `item.getInstalledVehicles()`. Renamed to `_getOtherVehicleIntCDs`
+   (plural), now returns every other-vehicle intCD; `getCurrentItems()`
+   resolves a name for each and joins with `', '` into one
+   `otherVehicleName` string. AS3 label widened accordingly: truncation
+   threshold 18→42 chars, switched to `wordWrap=true` across two lines
+   (`y=104, height=22`) instead of a single clipped line, since a joined
+   multi-vehicle string is often too long for one line even in the bigger
+   cell.
+
+Recomputed the cell's internal layout to fit the taller icon/text without
+overlap: icon (y=4..72) → name label (y=76, height=28, ends 104) → used-up
+label (y=104, height=22, ends 126 = `CELL_SIZE-6`, the drawn cell's own
+bottom edge) — deliberately tight, no slack left, so if actual rendered
+text runs longer than expected this is the first place to look. Compiled
+clean (7125 bytes). Packaged as v0.0.44. None of the three changes above
+have been live-tested yet.
+
+## 7aq. Session 1 — v0.0.44 live test: scroll-gap bug diagnosed and fixed; bounds issue still unresolved, need a fuller screenshot (v0.0.45)
+
+User reported the wheel not scrolling when the cursor sits in the thin gap
+between adjacent cells (works fine directly over a cell/icon). Root cause,
+worked out from the actual geometry rather than guessed: each `GridCell`
+only paints `CELL_SIZE-6` of its `CELL_SIZE` slot (`drawCellBackground`),
+leaving an uncovered ~6px strip on its own right/bottom edge — and since
+the *next* cell over only paints its own `CELL_SIZE-6` starting from its
+own origin, that strip is never covered by either neighbor. `content`
+itself has no fill of its own, so at those exact pixels there's nothing
+with real graphics for GFx to hit-test against, and the `MOUSE_WHEEL`
+listener on `content` never fires there — worth noting `bg`'s own
+identical listener was likely never doing anything either, structurally:
+`Shape` doesn't extend `InteractiveObject` in real AS3 (unlike `Sprite`),
+so it can't independently dispatch mouse events at all regardless of GFx
+quirks — `content`'s listener (a real `Sprite`) has been carrying all of
+the actually-working scroll behavior this whole time.
+
+**Fix**: `rebuildGrid()` now adds an invisible (`alpha=0`) full-coverage
+`Shape` as `content`'s first child, sized to
+`(COLUMNS * CELL_SIZE, max(contentHeight, VIEWPORT_HEIGHT))` — covers the
+entire scrollable area, not just one screen's worth, so it stays valid
+after scrolling down to reveal further rows. Since a `Sprite`'s own
+hit-test area is the union of everything rendered in its subtree
+(interactive or not), this gives `content` real coverage everywhere,
+closing every gap-line in the grid. Cells still render on top for the
+correct visual. Compiled clean (7177 bytes), packaged v0.0.45.
+
+**Bounds issue: still unresolved, genuinely can't diagnose blind.** Two
+reports now (v0.0.43's left-edge red box, v0.0.44's top-right one) — both
+screenshots are cropped tightly around just the window, with no visible
+screen edge to compare against, so there's no way to tell whether the
+window is actually being pushed off the real screen boundary, sized wider
+than the visible play area, or if this is a native window-chrome/decorator
+rendering quirk this mod doesn't draw and can't control. v0.0.44's
+`Math.max(0, ...)` clamp on `as_setGeometry` didn't resolve it, which at
+least rules out a simple negative-coordinate cause. Asked the user for a
+full, uncropped screenshot of the entire game screen next time (not just
+the window) so the window's position can actually be compared against real
+screen bounds — guessing further without that risks another wasted
+build/test cycle.
+
+## 7ar. Session 1 — full-screen screenshot: bounds issue not reproducible, window is correctly contained
+
+User sent a full, uncropped screenshot per the request in §7aq. It shows
+the window sitting well within the screen on every side — comfortable
+margin left/right/top/bottom, full title bar and close button visible, no
+clipping. Whatever the two earlier cropped screenshots were showing wasn't
+an actual off-screen/mispositioned window — most likely just an artifact
+of how tightly those specific screenshots happened to be cropped around
+the window itself, not a real bug in `as_setGeometry`'s math. Not
+resolving anything further here since there's nothing left to fix; treating
+this as closed unless it recurs.
+
+**Also visible and working in this screenshot**: real vehicle names
+render correctly on used-up items (e.g. "On CS-52 LIS, FCM 2C", "On KV-4
+Turchaninov"), including comma-joined multi-vehicle cases (§7ap) — first
+live confirmation that part is actually working end-to-end, not just
+compiled-and-guessed. Grid layout at the new 5-column/132px size reads
+cleanly with no visible overlap between the name label and the used-up
+line.
+
+**CONFIRMED LIVE (v0.0.45): scroll-gap fix works.** User confirmed the
+mouse wheel now scrolls correctly when hovering in the gaps between cells,
+not just directly over them — §7aq's diagnosis (uncovered pixels between
+cell fills, invisible full-coverage hit-`Shape` added behind the cells)
+was correct and the fix holds.
+
 ## 7. New source, user-provided: `izeberg/wot-src`
 
 User-supplied: <https://github.com/izeberg/wot-src> — a public
