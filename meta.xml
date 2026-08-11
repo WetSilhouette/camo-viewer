@@ -1,0 +1,6 @@
+<root>
+  <id>silhouette.camoViewer</id>
+  <version>{{VERSION}}</version>
+  <name>silhouette.camoViewer</name>
+  <description>Expand the Customization camo/style carousel into a full grid (Space)</description>
+</root>
