@@ -1,6 +1,8 @@
 package camoViewer {
   import net.wg.infrastructure.base.AbstractWindowView;
   import net.wg.gui.components.controls.Image;
+  import net.wg.gui.components.controls.TextInput;
+  import scaleform.clik.events.InputEvent;
   import flash.text.TextField;
   import flash.text.TextFormat;
   import flash.display.Shape;
@@ -15,7 +17,7 @@ package camoViewer {
     private static const CELL_SIZE:int = 110;
     private static const USED_UP_COLOR:uint = 0xe2925a;
     private static const PADDING:int = 12;
-    private static const FILTER_BAR_HEIGHT:int = 60;
+    private static const FILTER_BAR_HEIGHT:int = 90;
     private static const FILTER_ROW_HEIGHT:int = 26;
     private static const VIEWPORT_HEIGHT:int = 450;
     private static const WHEEL_STEP:int = 40;
@@ -51,6 +53,8 @@ package camoViewer {
     private var favoritesOnly:Boolean = false;
     private var seasonFilter:int = 0;
     private var availabilityFilter:int = AVAILABILITY_ALL;
+    private var searchInput:TextInput;
+    private var searchQuery:String = '';
 
     public function CamoGridWindow() {
       super();
@@ -84,7 +88,18 @@ package camoViewer {
       var gap:int = 4;
       var row1Y:int = PADDING;
       var row2Y:int = PADDING + FILTER_ROW_HEIGHT + 4;
+      var row3Y:int = PADDING + (FILTER_ROW_HEIGHT + 4) * 2;
       var buttonX:int = PADDING;
+
+      searchInput = App.utils.classFactory.getComponent('TextInput', TextInput, {
+              x: PADDING,
+              y: row3Y,
+              width: COLUMNS * CELL_SIZE - PADDING,
+              height: FILTER_ROW_HEIGHT,
+              defaultText: 'Search by name...'
+            }) as TextInput;
+      addChild(searchInput);
+      searchInput.addEventListener(InputEvent.INPUT, onSearchInput, false, 0, true);
 
       favoritesButton = new FilterButton('Favorites', FAVORITES_ONLY);
       favoritesButton.x = buttonX;
@@ -127,6 +142,11 @@ package camoViewer {
         buttonX += 108 + gap;
       }
       availabilityButtons[0].setActive(true);
+    }
+
+    private function onSearchInput(event:InputEvent):void {
+      searchQuery = searchInput.text.toLowerCase();
+      applyFilters();
     }
 
     private function onAvailabilityButtonClick(event:MouseEvent):void {
@@ -182,6 +202,9 @@ package camoViewer {
           continue;
         }
         if (availabilityFilter == AVAILABILITY_ON_OTHER && !Boolean(item.usedUp)) {
+          continue;
+        }
+        if (searchQuery != '' && String(item.name).toLowerCase().indexOf(searchQuery) == -1) {
           continue;
         }
         visible.push(item);

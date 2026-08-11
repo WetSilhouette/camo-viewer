@@ -1638,6 +1638,32 @@ itself best validated by the *absence* of new problems in the next
 normal test, plus checking the new banner/confirmation lines appear
 as expected.
 
+## 7ah. Session 1 — search-by-name added (not yet live-tested)
+
+Added a third filter-bar row: a real text input for live substring
+search on item name. Used the confirmed-real `TextInput` component
+pattern from the reference mod (`EnterLicenseWindow.as`,
+`App.utils.classFactory.getComponent('TextInput', TextInput, {...})`
++ `scaleform.clik.events.InputEvent.INPUT` listener) rather than a
+bare `flash.text.TextField` — `TextInput` is a real, skinned,
+library-linked CLIK component (needs `classFactory`, unlike
+`ScrollPane`/`Image` which were plain logic classes safely
+`new`-able directly, per §7l's lesson about the two different
+categories), and this project already has one directly-confirmed
+working example of exactly this component+event combination to copy
+rather than guess at. Filtering: case-insensitive substring match on
+`item.name`, combined with the existing Favorites/Season/Availability
+filters (all AND'd together in `applyFilters()`). Filter bar grew to
+three rows (60→90px). Compiled clean (6964 bytes).
+
+**Not yet live-tested — this is a first for the project**: every
+previous AS3 component used so far (`Image`, `ScrollPane`,
+`FilterButton`, `GridCell`) was either read-only display or a click
+target; `TextInput` is the first real *keyboard text entry* component,
+a different interaction category (focus handling, IME/keyboard
+routing) that hasn't been exercised at all yet in this Scaleform
+context.
+
 ## 7. New source, user-provided: `izeberg/wot-src`
 
 User-supplied: <https://github.com/izeberg/wot-src> — a public
