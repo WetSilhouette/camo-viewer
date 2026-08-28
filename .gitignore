@@ -1,2 +1,7 @@
 *.mtmod
 *.wotmod
+build/
+.DS_Store
+_reference/
+as3/libs/
+as3/bin/
